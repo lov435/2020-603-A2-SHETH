@@ -35,10 +35,62 @@ int majorityVote(list<Neighbor> & neighbors) {
     return mostFrequentClass;
 }
 
+__device__ int majorityVote(int k, Neighbor * neighbors) {
+
+}
+
 __global__ void predictForOneInstance(ArffData* dataset, int k, int * prediction)
 {
 	//First, compute the thread id and call it i.
     int i = blockDim.x * blockIdx.x + threadIdx.x;
+
+    //Array of k neighbors. Initialize them.
+	Neighbor * neighbors = (Neighbor *)malloc(sizeof(Neighbor)*k);
+	for(int p=0; p <k; p++) {
+		neighbors[p].distance = FLT_MAX;
+		neighbors[p].cls = -1;
+	}
+
+
+	for(int j = 0; j < dataset->num_instances(); j++) // target each other instance
+	{
+		if(i == j) continue;
+
+		float distance = 0;
+
+		for(int h = 0; h < dataset->num_attributes() - 1; h++) // compute the distance between the two instances
+		{
+			float diff = dataset->get_instance(i)->get(h)->operator float() - dataset->get_instance(j)->get(h)->operator float();
+			distance += diff * diff;
+		}
+
+		distance = sqrt(distance);
+
+		for(int p=0; p <k; p++) {
+			if(distance < neighbors[p].distance) {
+				Neighbor neighbor;
+				neighbor.distance = distance;
+				neighbor.cls = dataset->get_instance(j)->get(dataset->num_attributes() - 1)->operator int32();
+
+				Neighbor * newNeighbors = (Neighbor *)malloc(sizeof(Neighbor)*k);
+
+				for(int q=0, r=0; q <k; q++) {
+					if(p == q) {
+						newNeighbors[q] = neighbor;
+						continue;
+					}
+					newNeighbors[q] = neighbors[r++];
+				}
+
+				free(neighbors);
+				neighbors = newNeighbors;
+				break;
+			}
+		}
+	}
+	*prediction = majorityVote(k, neighbors);
+	//Free the memory
+	free(neighbors);
 }
 
 int* KNN(ArffData* dataset, int k)

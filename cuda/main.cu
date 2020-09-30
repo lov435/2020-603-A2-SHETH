@@ -15,7 +15,7 @@ struct Neighbor {
 	float distance;
 	int cls;
 };
-	
+
 int majorityVote(list<Neighbor> & neighbors) {
     std::map<int, int> frequencyMap;
     int maxFrequency = 0;
@@ -33,6 +33,12 @@ int majorityVote(list<Neighbor> & neighbors) {
     }
 
     return mostFrequentClass;
+}
+
+__global__ void predictForOneInstance(ArffData* dataset, int k, int * prediction)
+{
+	//First, compute the thread id and call it i.
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
 }
 
 int* KNN(ArffData* dataset, int k)
@@ -123,7 +129,7 @@ int main(int argc, char *argv[])
 {
     if(argc != 3)
     {
-        cout << "Usage: ./main ../datasets/datasetFile.arff <k>" << endl;
+        cout << "Usage: ./main <path to dataset> <k>" << endl;
         exit(0);
     }
     

@@ -16,6 +16,11 @@ struct Neighbor {
 	int cls;
 };
 
+struct Instance {
+	float * attribs;
+	int cls;
+};
+
 int majorityVote(list<Neighbor> & neighbors) {
     std::map<int, int> frequencyMap;
     int maxFrequency = 0;
@@ -39,10 +44,13 @@ __device__ int majorityVote(int k, Neighbor * neighbors) {
 
 }
 
-__global__ void predictForOneInstance(ArffData* dataset, int k, int * prediction)
+__global__ void predictForOneInstance(Instance * instances, int numInstances, int numAttribs,
+		int k, int * prediction)
 {
 	//First, compute the thread id and call it i.
     int i = blockDim.x * blockIdx.x + threadIdx.x;
+
+    Instance current_instance = instances[i];
 
     //Array of k neighbors. Initialize them.
 	Neighbor * neighbors = (Neighbor *)malloc(sizeof(Neighbor)*k);
@@ -52,15 +60,15 @@ __global__ void predictForOneInstance(ArffData* dataset, int k, int * prediction
 	}
 
 
-	for(int j = 0; j < dataset->num_instances(); j++) // target each other instance
+	for(int j = 0; j < numInstances; j++) // target each other instance
 	{
 		if(i == j) continue;
 
 		float distance = 0;
 
-		for(int h = 0; h < dataset->num_attributes() - 1; h++) // compute the distance between the two instances
+		for(int h = 0; h < numAttribs - 1; h++) // compute the distance between the two instances
 		{
-			float diff = dataset->get_instance(i)->get(h)->operator float() - dataset->get_instance(j)->get(h)->operator float();
+			float diff = current_instance.attribs[h] - instances[j].attribs[h];
 			distance += diff * diff;
 		}
 
@@ -70,7 +78,7 @@ __global__ void predictForOneInstance(ArffData* dataset, int k, int * prediction
 			if(distance < neighbors[p].distance) {
 				Neighbor neighbor;
 				neighbor.distance = distance;
-				neighbor.cls = dataset->get_instance(j)->get(dataset->num_attributes() - 1)->operator int32();
+				neighbor.cls = instances[j].cls;
 
 				Neighbor * newNeighbors = (Neighbor *)malloc(sizeof(Neighbor)*k);
 

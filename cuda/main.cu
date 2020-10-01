@@ -49,7 +49,7 @@ __device__ int majorityVote(int k, Neighbor * neighbors) {
 	FrequencyMap * freqMap = (FrequencyMap *)malloc(sizeof(FrequencyMap)*k);
 
     int maxFrequency = 0;
-    int  mostFrequentClass = -1;
+    int  mostFrequentClass = neighbors[0].cls; //default, useful when k is 1
     int numClasses = 0;
 
 	for(int i=0; i <k; i++) {
@@ -93,14 +93,6 @@ __global__ void basicCuda(Instance * instances, int numInstances, int numAttribs
 
     Instance current_instance = instances[i];
 
-    if(i == 0) {
-    	printf("Instance 1 attributes are ");
-    	for(int x=0; x < 7; x++) {
-    		printf("%f, ", current_instance.attribs[x]);
-    	}
-    	printf("%d\n", current_instance.cls);
-    }
-
     //Array of k neighbors. Initialize them.
 	Neighbor * neighbors = (Neighbor *)malloc(sizeof(Neighbor)*k);
 	for(int p=0; p <k; p++) {
@@ -115,7 +107,7 @@ __global__ void basicCuda(Instance * instances, int numInstances, int numAttribs
 
 		float distance = 0;
 
-		for(int h = 0; h < numAttribs - 1; h++) // compute the distance between the two instances
+		for(int h = 0; h < numAttribs; h++) // compute the distance between the two instances
 		{
 			float diff = current_instance.attribs[h] - instances[j].attribs[h];
 			distance += diff * diff;
@@ -170,7 +162,7 @@ int* basicCudaKNN(ArffData* dataset, int k)
 
 	// Launch the Vector Add CUDA Kernel
 	int threadsPerBlock = 256;
-	int blocksPerGrid = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+	int blocksPerGrid = (numElements / threadsPerBlock) + 1;
 
 	printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
 
@@ -217,31 +209,24 @@ int* basicCudaKNN(ArffData* dataset, int k)
         exit(EXIT_FAILURE);
     }
 
-    cout << "Starting to free host meomory" << endl;
     // Free host memory
    	for(int i = 0; i < numElements; i++) // for each instance in the dataset
 	{
 		free(h_instances[i].attribs);
 	}
-   	cout << "Host instance attributes are cleared" << endl;
-
     free(h_instances);
 
-    cout << "Starting to free cuda meomory" << endl;
     // Free device global memory
     cudaFree(d_predictions);
 
-    cout << "Device predictions are cleared" << endl;
-    /*
+	Instance * h_d_instances = (Instance *)malloc(numElements * sizeof(Instance));
+	cudaMemcpy(h_d_instances, d_instances, numElements*sizeof(Instance), cudaMemcpyDeviceToHost);
 	for(int i = 0; i < numElements; i++) // for each instance in the dataset
 	{
-		cout << "Attributes for instance " << i << " are getting cleared" << endl;
-		cudaFree(d_instances[i].attribs);
+		cudaFree(h_d_instances[i].attribs);
 	}
-	cout << "Attributes pointers are freed" << endl;
-	*/
     cudaFree(d_instances);
-    cout << "Device instances are finally freed" << endl;
+	free(h_d_instances);
 	return predictions;
 }
 

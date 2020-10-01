@@ -41,16 +41,65 @@ int majorityVote(list<Neighbor> & neighbors) {
 }
 
 __device__ int majorityVote(int k, Neighbor * neighbors) {
+	struct FrequencyMap {
+		int cls;
+		int freq;
+	};
 
+	FrequencyMap * freqMap = (FrequencyMap *)malloc(sizeof(FrequencyMap)*k);
+
+    int maxFrequency = 0;
+    int  mostFrequentClass = -1;
+    int numClasses = 0;
+
+	for(int i=0; i <k; i++) {
+		bool found = false;
+		for(int j=0; j < numClasses; j++) {
+			if(freqMap[j].cls == neighbors[i].cls) {
+				found = true;
+				freqMap[j].freq = freqMap[j].freq + 1;
+				if(freqMap[j].freq > maxFrequency) {
+					maxFrequency = freqMap[j].freq;
+					mostFrequentClass = freqMap[j].cls;
+				}
+				break;
+			}
+		}
+		if(!found) {
+			//Encountered this class first time. Add it to the map.
+			freqMap[numClasses].cls = neighbors[i].cls;
+			freqMap[numClasses].freq = 1;
+			numClasses++;
+		}
+	}
+	free(freqMap);
+	return mostFrequentClass;
 }
 
-__global__ void predictForOneInstance(Instance * instances, int numInstances, int numAttribs,
+/*
+ * Basic CUDA kernel function.
+ * Each threads runs KNN for exactly one instance in the dataset.
+ * Therefore, this model requires as many threads as the number of elements in the dataset
+ */
+__global__ void basicCuda(Instance * instances, int numInstances, int numAttribs,
 		int k, int * prediction)
 {
 	//First, compute the thread id and call it i.
     int i = blockDim.x * blockIdx.x + threadIdx.x;
 
+    if (i >= numInstances) {
+    	return;
+    }
+
     Instance current_instance = instances[i];
+
+    if(i == 0) {
+    	printf("Instance 1 attributes are ");
+    	for(int x=0; x < 7; x++) {
+    		printf("%f, ", current_instance.attribs[x]);
+    	}
+    	printf("%d\n", current_instance.cls);
+    }
 
     //Array of k neighbors. Initialize them.
 	Neighbor * neighbors = (Neighbor *)malloc(sizeof(Neighbor)*k);
@@ -96,10 +145,106 @@ __global__ void predictForOneInstance(Instance * instances, int numInstances, in
 			}
 		}
 	}
-	*prediction = majorityVote(k, neighbors);
+	prediction[i] = majorityVote(k, neighbors);
 	//Free the memory
 	free(neighbors);
 }
+
+
+int* basicCudaKNN(ArffData* dataset, int k)
+{
+    // predictions is the array where you have to return the class predicted (integer) for the dataset instances
+    int* predictions = (int*)malloc(dataset->num_instances() * sizeof(int));
+
+    // The following two lines show the syntax to retrieve the attribute values and the class value for a given instance in the dataset
+    // float attributeValue = dataset->get_instance(instanceIndex)->get(attributeIndex)->operator float();
+    // int classValue =  dataset->get_instance(instanceIndex)->get(dataset->num_attributes() - 1)->operator int32();
+
+    // Implement the KNN here, fill the predictions array
+	cout << "K is " << k << endl;
+
+	int numElements = dataset->num_instances();
+	int numAttribs = dataset->num_attributes() - 1; //-1 because the last attrib is class
+
+	Instance * h_instances = (Instance *)malloc(numElements * sizeof(Instance));
+
+	// Launch the Vector Add CUDA Kernel
+	int threadsPerBlock = 256;
+	int blocksPerGrid = (numElements + threadsPerBlock - 1) / threadsPerBlock;
+
+	printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+
+
+	for(int i = 0; i < numElements; i++) // for each instance in the dataset
+	{
+		float * attribs = (float *) malloc (sizeof(float)*numAttribs);
+		for(int h = 0; h < numAttribs; h++) // compute the distance between the two instances
+		{
+			attribs[h] = dataset->get_instance(i)->get(h)->operator float();
+		}
+		h_instances[i].attribs = attribs;
+		h_instances[i].cls = dataset->get_instance(i)->get(numAttribs)->operator int32();
+	}
+
+    Instance * d_instances;
+	cudaMalloc(&d_instances, numElements*sizeof(Instance));
+	cudaMemcpy(d_instances, h_instances, numElements*sizeof(Instance), cudaMemcpyHostToDevice);
+
+
+	for(int i = 0; i < numElements; i++) // for each instance in the dataset
+	{
+		float * d_attribs;
+		cudaMalloc(&d_attribs, numAttribs*sizeof(float));
+		// Copy up attributes for each instance separately
+		cudaMemcpy(d_attribs, h_instances[i].attribs, numAttribs*sizeof(float), cudaMemcpyHostToDevice);
+		cudaMemcpy(&(d_instances[i].attribs), &d_attribs, sizeof(float*), cudaMemcpyHostToDevice);
+	}
+
+
+	int * d_predictions;
+	cudaMalloc(&d_predictions, numElements*sizeof(int));
+
+	basicCuda<<<blocksPerGrid, threadsPerBlock>>>(d_instances, numElements,
+			numAttribs, k, d_predictions);
+
+	// Copy the device prediction vector in device memory to the host prediction vector
+    cudaMemcpy(predictions, d_predictions, numElements * sizeof(int), cudaMemcpyDeviceToHost);
+
+    cudaError_t cudaError = cudaGetLastError();
+
+    if(cudaError != cudaSuccess) {
+        fprintf(stderr, "cudaGetLastError() returned %d: %s\n", cudaError, cudaGetErrorString(cudaError));
+        exit(EXIT_FAILURE);
+    }
+
+    cout << "Starting to free host meomory" << endl;
+    // Free host memory
+   	for(int i = 0; i < numElements; i++) // for each instance in the dataset
+	{
+		free(h_instances[i].attribs);
+	}
+   	cout << "Host instance attributes are cleared" << endl;
+
+    free(h_instances);
+
+    cout << "Starting to free cuda meomory" << endl;
+    // Free device global memory
+    cudaFree(d_predictions);
+
+    cout << "Device predictions are cleared" << endl;
+    /*
+	for(int i = 0; i < numElements; i++) // for each instance in the dataset
+	{
+		cout << "Attributes for instance " << i << " are getting cleared" << endl;
+		cudaFree(d_instances[i].attribs);
+	}
+	cout << "Attributes pointers are freed" << endl;
+	*/
+    cudaFree(d_instances);
+    cout << "Device instances are finally freed" << endl;
+	return predictions;
+}
+
 
 int* KNN(ArffData* dataset, int k)
 {
@@ -201,7 +346,9 @@ int main(int argc, char *argv[])
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
     
     // Get the class predictions
-    int* predictions = KNN(dataset, atoi(argv[2]));
+    //int* predictions = KNN(dataset, atoi(argv[2]));
+	int* predictions = basicCudaKNN(dataset, atoi(argv[2]));
+
     // Compute the confusion matrix
     int* confusionMatrix = computeConfusionMatrix(predictions, dataset);
     // Calculate the accuracy

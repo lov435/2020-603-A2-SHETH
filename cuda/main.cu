@@ -40,6 +40,47 @@ int majorityVote(list<Neighbor> & neighbors) {
     return mostFrequentClass;
 }
 
+void predictFromDistances (float * distances, Instance * instances, int numInstances,
+			int k, int * predictions) {
+
+	//Initialize an empty neighbor
+	Neighbor  neighbor;
+	neighbor.distance = FLT_MAX;
+	neighbor.cls = -1;
+	//List of k neighbors
+	std::list<Neighbor> neighbors (k, neighbor);
+
+	for(int i=0; i < numInstances * numInstances; i++) {
+		if(i%numInstances == i/numInstances)
+			distances[i] = FLT_MAX; //subject and target instances are the same.
+
+		for (std::list<Neighbor>::iterator it = neighbors.begin(); it != neighbors.end(); it++) {
+			if(distances[i] < (*it).distance) {
+				Neighbor neighbor;
+				neighbor.distance = distances[i];
+				neighbor.cls = instances[i%numInstances].cls;
+				neighbors.insert(it, neighbor);
+				neighbors.pop_back(); //Remove the last neighbor
+				break;
+			}
+		}
+
+		if((i+1)%numInstances == 0) {
+			predictions[i/numInstances] = majorityVote(neighbors);
+			//Reset the neighbors as we are starting the next instance
+			neighbors.clear();
+			for (int x=0; x <k; x++)
+			{
+				Neighbor neighbor;
+				neighbor.distance = FLT_MAX;
+				neighbor.cls = -1;
+				neighbors.push_back(neighbor);
+			}
+		}
+
+	}
+}
+
 __device__ int majorityVote(int k, Neighbor * neighbors) {
 	struct FrequencyMap {
 		int cls;
@@ -75,6 +116,37 @@ __device__ int majorityVote(int k, Neighbor * neighbors) {
 	free(freqMap);
 	return mostFrequentClass;
 }
+
+
+/*
+ * Advance CUDA kernel function.
+ * Each thread simply calculates the distance of one specific instance to another specific one.
+ * Therefore, this model requires as many threads as the number of elements in the dataset
+ */
+__global__ void advanceCuda(Instance * instances, int numInstances, int numAttribs, float * distances)
+{
+	//First, compute the thread id and call it i.
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (i >= numInstances * numInstances) {
+    	return;
+    }
+
+    Instance current_instance = instances[i/numInstances];
+	Instance target_instance = instances[i%numInstances];
+
+	float distance = 0;
+	for(int h = 0; h < numAttribs; h++) // compute the distance between the two instances
+	{
+		float diff = current_instance.attribs[h] - target_instance.attribs[h];
+		distance += diff * diff;
+	}
+
+	distance = sqrt(distance);
+
+	distances[i] = distance;
+}
+
 
 /*
  * Basic CUDA kernel function.
@@ -142,6 +214,97 @@ __global__ void basicCuda(Instance * instances, int numInstances, int numAttribs
 	free(neighbors);
 }
 
+int* advanceCudaKNN(ArffData* dataset, int k)
+{
+    // predictions is the array where you have to return the class predicted (integer) for the dataset instances
+    int* predictions = (int*)malloc(dataset->num_instances() * sizeof(int));
+
+    // The following two lines show the syntax to retrieve the attribute values and the class value for a given instance in the dataset
+    // float attributeValue = dataset->get_instance(instanceIndex)->get(attributeIndex)->operator float();
+    // int classValue =  dataset->get_instance(instanceIndex)->get(dataset->num_attributes() - 1)->operator int32();
+
+    // Implement the KNN here, fill the predictions array
+	cout << "K is " << k << endl;
+
+	int numElements = dataset->num_instances();
+	int numAttribs = dataset->num_attributes() - 1; //-1 because the last attrib is class
+
+	Instance * h_instances = (Instance *)malloc(numElements * sizeof(Instance));
+
+	// Launch the CUDA Kernel
+	int threadsPerBlock = 256;
+	int blocksPerGrid = (numElements * numElements / threadsPerBlock) + 1;
+
+	printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+
+	//Convert the arf dataset to an array of Instance structure on host
+	for(int i = 0; i < numElements; i++) // for each instance in the dataset
+	{
+		float * attribs = (float *) malloc (sizeof(float)*numAttribs);
+		for(int h = 0; h < numAttribs; h++) // compute the distance between the two instances
+		{
+			attribs[h] = dataset->get_instance(i)->get(h)->operator float();
+		}
+		h_instances[i].attribs = attribs;
+		h_instances[i].cls = dataset->get_instance(i)->get(numAttribs)->operator int32();
+	}
+
+	//Make another copy of the instances array from host to device
+    Instance * d_instances;
+	cudaMalloc(&d_instances, numElements*sizeof(Instance));
+	cudaMemcpy(d_instances, h_instances, numElements*sizeof(Instance), cudaMemcpyHostToDevice);
+	for(int i = 0; i < numElements; i++) // for each instance in the dataset
+	{
+		float * d_attribs;
+		cudaMalloc(&d_attribs, numAttribs*sizeof(float));
+		// Copy up attributes for each instance separately
+		cudaMemcpy(d_attribs, h_instances[i].attribs, numAttribs*sizeof(float), cudaMemcpyHostToDevice);
+		cudaMemcpy(&(d_instances[i].attribs), &d_attribs, sizeof(float*), cudaMemcpyHostToDevice);
+	}
+
+	//Create an array of numElements X numElements elements on device. Kernel function will
+	//populate the distances here.
+	float * d_distances;
+	cudaMalloc(&d_distances, numElements*numElements*sizeof(float));
+
+	//Call kernel
+	advanceCuda<<<blocksPerGrid, threadsPerBlock>>>(d_instances, numElements, numAttribs, d_distances);
+
+    cudaError_t cudaError = cudaGetLastError();
+
+    if(cudaError != cudaSuccess) {
+        fprintf(stderr, "cudaGetLastError() returned %d: %s\n", cudaError, cudaGetErrorString(cudaError));
+        exit(EXIT_FAILURE);
+    }
+
+	//Create an array of numElements X numElements elements on host.
+	//We will copy the distance array from the device to this one
+	float * h_distances = (float *) malloc(numElements*numElements*sizeof(float));
+	// Copy the device distance vector in device memory to the host distance vector
+    cudaMemcpy(h_distances, d_distances, numElements * numElements * sizeof(float), cudaMemcpyDeviceToHost);
+
+	predictFromDistances(h_distances, h_instances, numElements, k, predictions);
+
+    // Free host memory
+   	for(int i = 0; i < numElements; i++) // for each instance in the dataset
+	{
+		free(h_instances[i].attribs);
+	}
+    free(h_instances);
+	free(h_distances);
+
+    // Free device global memory
+    cudaFree(d_distances);
+	Instance * h_d_instances = (Instance *)malloc(numElements * sizeof(Instance));
+	cudaMemcpy(h_d_instances, d_instances, numElements*sizeof(Instance), cudaMemcpyDeviceToHost);
+	for(int i = 0; i < numElements; i++) // for each instance in the dataset
+	{
+		cudaFree(h_d_instances[i].attribs);
+	}
+    cudaFree(d_instances);
+	free(h_d_instances);
+	return predictions;
+}
 
 int* basicCudaKNN(ArffData* dataset, int k)
 {
@@ -245,9 +408,6 @@ int* KNN(ArffData* dataset, int k)
 	
 	for(int i = 0; i < dataset->num_instances(); i++) // for each instance in the dataset
 	{
-		float smallestDistance = FLT_MAX;
-		int smallestDistanceClass;
-
 		//Initialize an empty neighbor
 		Neighbor  neighbor;
 		neighbor.distance = FLT_MAX;
@@ -332,7 +492,8 @@ int main(int argc, char *argv[])
     
     // Get the class predictions
     //int* predictions = KNN(dataset, atoi(argv[2]));
-	int* predictions = basicCudaKNN(dataset, atoi(argv[2]));
+	//int* predictions = basicCudaKNN(dataset, atoi(argv[2]));
+	int* predictions = advanceCudaKNN(dataset, atoi(argv[2]));
 
     // Compute the confusion matrix
     int* confusionMatrix = computeConfusionMatrix(predictions, dataset);

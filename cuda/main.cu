@@ -4,6 +4,7 @@
 #include <float.h>
 #include <math.h>
 #include <iostream>
+#include <string.h>
 #include <list>
 #include <map>
 #include "../libarff/arff_parser.h"
@@ -477,9 +478,9 @@ float computeAccuracy(int* confusionMatrix, ArffData* dataset)
 
 int main(int argc, char *argv[])
 {
-    if(argc != 3)
+    if(argc != 4)
     {
-        cout << "Usage: ./main <path to dataset> <k>" << endl;
+        cout << "Usage: ./main <path to dataset> <k> <method>" << endl;
         exit(0);
     }
     
@@ -490,10 +491,14 @@ int main(int argc, char *argv[])
     
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
     
+    int * predictions;
     // Get the class predictions
-    //int* predictions = KNN(dataset, atoi(argv[2]));
-	//int* predictions = basicCudaKNN(dataset, atoi(argv[2]));
-	int* predictions = advanceCudaKNN(dataset, atoi(argv[2]));
+    if(strcmp(argv[3], "m1") == 0)
+    	predictions = KNN(dataset, atoi(argv[2]));
+    else if(strcmp(argv[3], "m2") == 0)
+    	predictions = basicCudaKNN(dataset, atoi(argv[2]));
+    else
+    	predictions = advanceCudaKNN(dataset, atoi(argv[2]));
 
     // Compute the confusion matrix
     int* confusionMatrix = computeConfusionMatrix(predictions, dataset);
